@@ -573,7 +573,8 @@ def main() -> None:
     except KeyboardInterrupt:
         print("\nInterrupted.")
     except Exception as exc:
-        print(f"Error: {exc}", file=sys.stderr)
+        message = str(exc) or f"{type(exc).__name__} (no further details)"
+        print(f"Error: {message}", file=sys.stderr)
         sys.exit(1)
 
 

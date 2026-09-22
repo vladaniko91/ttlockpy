@@ -116,7 +116,7 @@ class TTLock:
     # Connection management
     # ------------------------------------------------------------------
 
-    async def connect(self, timeout: float = 15.0, retries: int = 3,
+    async def connect(self, timeout: float = 15.0, retries: int = 5,
                       retry_delay: float = 4.0, max_retry_delay: float = 16.0) -> None:
         """Connect to the lock and subscribe to notifications.
 
@@ -134,6 +134,7 @@ class TTLock:
         for attempt in range(1, retries + 1):
             try:
                 await self._connect_once(timeout)
+                await self._verify_link()
                 return
             except (TimeoutError, BleakError) as exc:
                 last_exc = exc
@@ -142,6 +143,17 @@ class TTLock:
                     delay = min(retry_delay * (2 ** (attempt - 1)), max_retry_delay)
                     await asyncio.sleep(delay)
         raise last_exc
+
+    async def _verify_link(self) -> None:
+        """BlueZ can report a successful GATT connect on a link that never
+        actually delivers notifications, so a command sent right after
+        connecting can go unanswered even though nothing raised. Do a cheap
+        stateless round trip here so that failure is treated as a connect
+        failure (full reconnect via the retry loop above), instead of
+        surfacing later as an unexplained command timeout on a link that
+        was never going to work.
+        """
+        await self._auth_check_user_time()
 
     async def _connect_once(self, timeout: float) -> None:
         """BlueZ drops unpaired/unbonded BLE peripherals from its device cache
@@ -255,6 +267,12 @@ class TTLock:
         connects). Only use this for idempotent/stateless commands (auth
         challenges, queries) — never for one with a physical side effect
         like unlock/lock, where re-sending on ambiguous state is unsafe.
+
+        A bare response timeout is deliberately NOT retried here: on this
+        link it means the connection itself is bad (see `_verify_link`),
+        and resending on the same broken link just burns time. That case
+        should surface immediately so the caller's connect-level retry can
+        do a fresh reconnect instead.
         """
         last_exc: Exception | None = None
         for attempt in range(1, retries + 1):
