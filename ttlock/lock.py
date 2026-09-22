@@ -116,10 +116,29 @@ class TTLock:
     # Connection management
     # ------------------------------------------------------------------
 
-    async def connect(self, timeout: float = 15.0) -> None:
+    async def connect(self, timeout: float = 15.0, retries: int = 3,
+                      retry_delay: float = 2.0) -> None:
         """Connect to the lock and subscribe to notifications.
 
-        BlueZ drops unpaired/unbonded BLE peripherals from its device cache
+        GATT connection establishment fails far more often than passive
+        advertisement reception on a marginal RF link, so a single
+        connect attempt is unreliable even when the lock is clearly in
+        range and advertising. Retry a few times before giving up.
+        """
+        last_exc: Exception | None = None
+        for attempt in range(1, retries + 1):
+            try:
+                await self._connect_once(timeout)
+                return
+            except (TimeoutError, BleakError) as exc:
+                last_exc = exc
+                await self.disconnect()
+                if attempt < retries:
+                    await asyncio.sleep(retry_delay)
+        raise last_exc
+
+    async def _connect_once(self, timeout: float) -> None:
+        """BlueZ drops unpaired/unbonded BLE peripherals from its device cache
         shortly after scanning stops, so a plain address-based connect can
         fail to find the device even when it's in range. Scanning for the
         device immediately beforehand (in this same process/event loop)
