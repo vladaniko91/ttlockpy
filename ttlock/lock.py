@@ -238,23 +238,46 @@ class TTLock:
     # Authentication helpers
     # ------------------------------------------------------------------
 
+    async def _send_command_parsed(self, cmd_type, payload, parse_fn,
+                                    aes_key: bytes | None = None,
+                                    retries: int = 3,
+                                    retry_delay: float = 1.0):
+        """Send a command and parse its response, retrying the whole
+        request/response round trip if the parser rejects a truncated
+        payload (a "SUCCESS" response can still be missing its data on a
+        dropped/truncated BLE notification, same root cause as the flaky
+        connects). Only use this for idempotent/stateless commands (auth
+        challenges, queries) — never for one with a physical side effect
+        like unlock/lock, where re-sending on ambiguous state is unsafe.
+        """
+        last_exc: Exception | None = None
+        for attempt in range(1, retries + 1):
+            resp = await self._send_command(cmd_type, payload, aes_key=aes_key)
+            try:
+                return parse_fn(resp["data"])
+            except ValueError as exc:
+                last_exc = exc
+                if attempt < retries:
+                    await asyncio.sleep(retry_delay)
+        raise last_exc
+
     async def _auth_check_user_time(self) -> int:
         """V3 auth: validate the time window, get psFromLock."""
-        resp = await self._send_command(
+        return await self._send_command_parsed(
             CommandType.CHECK_USER_TIME,
             cmd.build_check_user_time(),
+            cmd.parse_check_user_time,
             aes_key=self.data.get_aes_key(),
         )
-        return cmd.parse_check_user_time(resp["data"])
 
     async def _auth_admin_login(self) -> int:
         """Older-protocol auth: verify admin identity, get psFromLock."""
-        resp = await self._send_command(
+        ps_from_lock = await self._send_command_parsed(
             CommandType.CHECK_ADMIN,
             cmd.build_check_admin(self.data.admin_ps),
+            cmd.parse_check_admin,
             aes_key=self.data.get_aes_key(),
         )
-        ps_from_lock = cmd.parse_check_admin(resp["data"])
         await self._send_command(
             CommandType.CHECK_RANDOM,
             cmd.build_check_random(ps_from_lock, self.data.unlock_key),
