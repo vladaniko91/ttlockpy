@@ -107,3 +107,10 @@ package-lock.json
 lockData.json
 docs/capture/
 myEnv.sh
+
+# Python
+__pycache__/
+*.pyc
+
+# Personal lock credentials (AES key, unlock key, etc.)
+lock.json
