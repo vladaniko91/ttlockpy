@@ -117,13 +117,18 @@ class TTLock:
     # ------------------------------------------------------------------
 
     async def connect(self, timeout: float = 15.0, retries: int = 3,
-                      retry_delay: float = 2.0) -> None:
+                      retry_delay: float = 4.0, max_retry_delay: float = 16.0) -> None:
         """Connect to the lock and subscribe to notifications.
 
         GATT connection establishment fails far more often than passive
         advertisement reception on a marginal RF link, so a single
         connect attempt is unreliable even when the lock is clearly in
         range and advertising. Retry a few times before giving up.
+
+        The lock also appears to need a brief cooldown after finishing a
+        prior BLE operation before it accepts a new connection, so the
+        delay between retries backs off exponentially rather than staying
+        fixed.
         """
         last_exc: Exception | None = None
         for attempt in range(1, retries + 1):
@@ -134,7 +139,8 @@ class TTLock:
                 last_exc = exc
                 await self.disconnect()
                 if attempt < retries:
-                    await asyncio.sleep(retry_delay)
+                    delay = min(retry_delay * (2 ** (attempt - 1)), max_retry_delay)
+                    await asyncio.sleep(delay)
         raise last_exc
 
     async def _connect_once(self, timeout: float) -> None:
