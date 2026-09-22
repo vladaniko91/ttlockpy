@@ -128,14 +128,14 @@ def parse_response(raw: bytes, aes_key: bytes | None = None,
     if len(decoded) >= 2:
         resp_code = decoded[1]
         cmd_data = decoded[2:]
-    elif len(decoded) == 1:
-        resp_code = decoded[0]
-        cmd_data = b""
     else:
-        # No payload at all. A CRC-valid, empty-payload reply to a
-        # payload-less command is a bare acknowledgement, not an
-        # explicit failure — treat it as SUCCESS (1), not FAILED (0).
-        resp_code = 1
+        # Fewer than 2 bytes decoded. Per bt-protocol.md, every response
+        # carries at least [cmd_type][response_code] — this is what a
+        # dropped/truncated BLE notification on a weak link looks like,
+        # not a documented ack for any command. Treat it as FAILED so
+        # callers get a clean "command failed" error instead of crashing
+        # deeper in a data parser that assumed a real payload.
+        resp_code = 0
         cmd_data = b""
 
     return {
