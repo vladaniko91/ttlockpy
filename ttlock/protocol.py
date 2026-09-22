@@ -132,7 +132,10 @@ def parse_response(raw: bytes, aes_key: bytes | None = None,
         resp_code = decoded[0]
         cmd_data = b""
     else:
-        resp_code = 0
+        # No payload at all. A CRC-valid, empty-payload reply to a
+        # payload-less command is a bare acknowledgement, not an
+        # explicit failure — treat it as SUCCESS (1), not FAILED (0).
+        resp_code = 1
         cmd_data = b""
 
     return {

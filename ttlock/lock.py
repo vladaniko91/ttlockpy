@@ -23,7 +23,7 @@ from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from bleak import BleakClient
+from bleak import BleakClient, BleakScanner
 from bleak.exc import BleakError
 
 from .const import (
@@ -117,8 +117,19 @@ class TTLock:
     # ------------------------------------------------------------------
 
     async def connect(self, timeout: float = 15.0) -> None:
-        """Connect to the lock and subscribe to notifications."""
-        self._client = BleakClient(self.data.address, timeout=timeout)
+        """Connect to the lock and subscribe to notifications.
+
+        BlueZ drops unpaired/unbonded BLE peripherals from its device cache
+        shortly after scanning stops, so a plain address-based connect can
+        fail to find the device even when it's in range. Scanning for the
+        device immediately beforehand (in this same process/event loop)
+        keeps BlueZ's object alive right up to the connect call.
+        """
+        device = await BleakScanner.find_device_by_address(
+            self.data.address, timeout=timeout
+        )
+        target = device if device is not None else self.data.address
+        self._client = BleakClient(target, timeout=timeout)
         await self._client.connect()
         await self._client.start_notify(NOTIFY_CHAR_UUID, self._on_notification)
 

@@ -33,8 +33,13 @@ from .const import (
 # ---------------------------------------------------------------------------
 
 def _dt_to_bytes(dt_str: str) -> bytes:
-    """Convert a "YYMMDDHHmm[ss]" string to bytes (one byte per pair)."""
-    return bytes(int(dt_str[i:i+2]) for i in range(0, len(dt_str), 2))
+    """Convert a "YYMMDDHHmm[ss]" string to BCD-encoded bytes (one byte per pair).
+
+    TTLock encodes each two-digit field as BCD (high nibble = tens digit,
+    low nibble = ones digit), e.g. day 31 -> 0x31, not the plain integer 31 (0x1F).
+    Reading the decimal digit pair as base-16 produces exactly that BCD byte.
+    """
+    return bytes(int(dt_str[i:i+2], 16) for i in range(0, len(dt_str), 2))
 
 
 def now_yymmddhhmm() -> str:
