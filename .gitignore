@@ -114,3 +114,7 @@ __pycache__/
 
 # Personal lock credentials (AES key, unlock key, etc.)
 lock.json
+lock.json.bak.*
+
+# cycle_test.py result logs
+cycle_log*.csv

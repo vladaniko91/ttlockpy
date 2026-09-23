@@ -134,7 +134,12 @@ class TTLock:
         for attempt in range(1, retries + 1):
             try:
                 await self._connect_once(timeout)
-                await self._verify_link()
+                if self.data.is_paired():
+                    # Nothing to verify yet on a factory-fresh lock: the
+                    # auth probe needs a real AES key from a completed
+                    # pairing, and pair() itself doesn't need (or survive)
+                    # this check running ahead of it.
+                    await self._verify_link()
                 return
             except (TimeoutError, BleakError) as exc:
                 last_exc = exc
@@ -162,6 +167,17 @@ class TTLock:
         device immediately beforehand (in this same process/event loop)
         keeps BlueZ's object alive right up to the connect call.
         """
+        # A TTLock instance is commonly reused across many connect/disconnect
+        # cycles (e.g. a long-running automation). Leftover bytes from a
+        # frame that was still arriving when the previous session ended, or
+        # a stale response sitting unconsumed in the queue from a command
+        # that timed out, would otherwise get mixed into the next session's
+        # first response — surfacing as "bad header"/"invalid padding"
+        # errors that look like protocol corruption but are really just
+        # stale local state. Start every connection with both empty.
+        self._rx_buffer.clear()
+        self._response_queue = asyncio.Queue()
+
         device = await BleakScanner.find_device_by_address(
             self.data.address, timeout=timeout
         )
@@ -209,8 +225,20 @@ class TTLock:
         aes_key: bytes | None = None,
         wait_response: bool = True,
         ignore_crc: bool = False,
+        require_success: bool = True,
     ) -> dict | None:
-        """Build, send, and optionally await a lock command."""
+        """Build, send, and optionally await a lock command.
+
+        `require_success=False` skips raising on a FAILED response code.
+        INITIALIZATION (the first pairing step, before any key exists) has
+        been observed to reply with a genuine, consistently-reproduced
+        zero-length payload — there is no response-code byte to read at
+        all, and parse_response's "fewer than 2 decoded bytes" fallback
+        reports that as FAILED by default. That default exists for actually
+        truncated/corrupted frames elsewhere; here it's this step's normal
+        acknowledgment, and pair() doesn't use this call's return value
+        anyway, so treat it as a non-fatal round trip instead of an error.
+        """
         proto = self.data.get_protocol()
         packet = build_packet(proto, int(cmd_type), payload, aes_key)
 
@@ -233,7 +261,7 @@ class TTLock:
             parsed = parse_response(frame, aes_key=aes_key,
                                     ignore_crc=ignore_crc)
             if parsed["crc_ok"] or ignore_crc:
-                if parsed["response"] != CommandResponse.SUCCESS:
+                if require_success and parsed["response"] != CommandResponse.SUCCESS:
                     raise RuntimeError(
                         f"Command 0x{cmd_type:02X} failed "
                         f"(response=0x{parsed['response']:02X})"
@@ -326,6 +354,7 @@ class TTLock:
             cmd.build_init(),
             aes_key=None,
             ignore_crc=True,
+            require_success=False,
         )
 
         # Step 2: Get the lock's AES key (use default key)
@@ -395,9 +424,18 @@ class TTLock:
     # Unlock / Lock / Status
     # ------------------------------------------------------------------
 
+    # Firing the actual UNLOCK/FUNCTION_LOCK command immediately after the
+    # auth handshake response, with zero gap, correlates with the lock
+    # sometimes genuinely replying FAILED (response=0x00) to a well-formed
+    # command it just finished authenticating for a moment earlier — the
+    # same "needs a moment to recover" behavior seen between reconnects,
+    # here showing up between two commands on the same connection.
+    _POST_AUTH_DELAY = 0.5
+
     async def unlock(self) -> None:
         """Unlock the lock."""
         ps_from_lock = await self._auth_check_user_time()
+        await asyncio.sleep(self._POST_AUTH_DELAY)
         resp = await self._send_command(
             CommandType.UNLOCK,
             cmd.build_unlock(ps_from_lock, self.data.unlock_key),
@@ -412,6 +450,7 @@ class TTLock:
     async def lock(self) -> None:
         """Lock the lock."""
         ps_from_lock = await self._auth_check_user_time()
+        await asyncio.sleep(self._POST_AUTH_DELAY)
         resp = await self._send_command(
             CommandType.FUNCTION_LOCK,
             cmd.build_lock(ps_from_lock, self.data.unlock_key),
